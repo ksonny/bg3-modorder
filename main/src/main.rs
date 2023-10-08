@@ -9,11 +9,12 @@ use clap::{Parser, Subcommand};
 use config::Config;
 use env_logger::Env;
 use error::Bg3ModError;
-use log::{debug, error};
+use log::{debug, error, info};
 use mod_meta::{read_mod_info, read_mod_settings, write_mod_settings, ModInfo};
 use pak_reader::{read_file, read_file_list, read_header};
 use regex::{Regex, RegexBuilder};
 use serde::Deserialize;
+use serde_json::json;
 
 mod error;
 
@@ -25,6 +26,9 @@ struct Configuration {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
+    InfoJson {
+        path: PathBuf,
+    },
     Available,
     Enabled,
     Order {
@@ -59,14 +63,14 @@ fn read_config(args: &Args) -> Result<Configuration, config::ConfigError> {
         .try_deserialize()
 }
 
-fn read_available_mods(config: &Configuration) -> Result<Vec<ModInfo>, Box<dyn std::error::Error>> {
-    if !config.mods_path.is_dir() {
+fn read_available_mods(mods_path: &Path) -> Result<Vec<ModInfo>, Box<dyn std::error::Error>> {
+    if !mods_path.is_dir() {
         Err(Bg3ModError::PathNotDirectory)?;
     }
 
     let mut mod_infos = Vec::new();
 
-    let paths = fs::read_dir(&config.mods_path)?;
+    let paths = fs::read_dir(&mods_path)?;
     for path in paths.flatten() {
         match path.path().extension().and_then(OsStr::to_str) {
             Some("pak") => {}
@@ -113,51 +117,63 @@ fn compile_pattern(pattern: &str) -> Result<Regex, regex::Error> {
 }
 
 fn execute_command(
+    mods_path: &Path,
     modsettings_path: &Path,
     cmd: Commands,
-    available: &[ModInfo],
-    enabled: &[ModInfo],
 ) -> Result<(), Box<dyn std::error::Error>> {
     match cmd {
+        Commands::InfoJson { path } => {
+            let mut file = fs::File::open(&path)?;
+            let header = read_header(&mut file)?;
+            let file_list = read_file_list(&mut file, &header)?;
+            let entry = file_list.iter().flatten().find(|e| e.name.ends_with(b"/meta.lsx"));
+            if let Some(entry) = entry {
+                let content = read_file(&mut file, &entry)?;
+                if let Some(mod_info) = read_mod_info(&content.data)? {
+                    let json = json!({ "mods": [serde_json::to_value(&mod_info)?] });
+                    writeln!(std::io::stdout(), "{}", serde_json::to_string_pretty(&json)?)?;
+                }
+            } else {
+                error!("Failed to read meta");
+            }
+            Ok(())
+        }
         Commands::Available => {
-            let mut stdout = std::io::stdout().lock();
-            writeln!(stdout, "mods: {}", available.len())?;
+            let available = read_available_mods(mods_path)?;
+            info!("mods: {}", available.len());
             for (i, m) in available.iter().enumerate() {
-                writeln!(stdout, "{} - {}", i, m.name)?;
+                info!("{} - {}", i, m.name);
             }
             Ok(())
         }
         Commands::Enabled => {
-            let mut stdout = std::io::stdout().lock();
-            for (i, m) in enabled.iter().enumerate() {
-                writeln!(stdout, "{} - {}", i, m.name)?;
-            }
+            let enabled = read_mod_settings(fs::File::open(&modsettings_path)?)?;
+            info!("mods:\n{}", enabled.iter().enumerate().map(|(i, m)| format!("{} - {}\n", i, m.name)).collect::<String>());
             Ok(())
         }
         Commands::Enable { pattern } => {
+            let available = read_available_mods(mods_path)?;
+            let enabled = read_mod_settings(fs::File::open(&modsettings_path)?)?;
             let pattern = compile_pattern(&pattern)?;
             let to_be_enabled = available
                 .iter()
                 .filter(|m| pattern.is_match(&m.name))
                 .filter(|m| !enabled.iter().any(|e| e.uuid == m.uuid))
                 .collect::<Vec<_>>();
-            let mut stdout = std::io::stdout().lock();
             if !to_be_enabled.is_empty() {
                 for m in to_be_enabled.clone() {
-                    writeln!(stdout, "enable {}", m.name)?;
+                    info!("enable {}", m.name);
                 }
                 let enabled = enabled.iter().chain(to_be_enabled).collect::<Vec<_>>();
-                writeln!(stdout)?;
-                for (i, m) in enabled.iter().enumerate() {
-                    writeln!(stdout, "{} - {}", i, m.name)?;
-                }
+                info!("mods:\n{}", enabled.iter().enumerate().map(|(i, m)| format!("{} - {}\n", i, m.name)).collect::<String>());
                 write_mod_settings(fs::File::create(modsettings_path)?, &enabled)?;
             } else {
-                writeln!(stdout, "no matches for pattern")?;
+                error!("no matches for pattern or all enabled");
             }
             Ok(())
         }
         Commands::Disable { pattern } => {
+            let enabled = read_mod_settings(fs::File::open(&modsettings_path)?)?;
             let pattern = compile_pattern(&pattern)?;
             let to_be_disabled = enabled
                 .iter()
@@ -165,10 +181,9 @@ fn execute_command(
                     m.name != "Gustav" && m.name != "GustavDev" && pattern.is_match(&m.name)
                 })
                 .collect::<Vec<_>>();
-            let mut stdout = std::io::stdout().lock();
             if !to_be_disabled.is_empty() {
                 for m in to_be_disabled.as_slice() {
-                    writeln!(stdout, "disable {}", m.name)?;
+                    info!("disable {}", m.name);
                 }
                 let enabled = enabled
                     .iter()
@@ -176,17 +191,15 @@ fn execute_command(
                         (m.name == "Gustav" || m.name == "GustavDev") || !pattern.is_match(&m.name)
                     })
                     .collect::<Vec<_>>();
-                writeln!(stdout)?;
-                for (i, m) in enabled.iter().enumerate() {
-                    writeln!(stdout, "{} - {}", i, m.name)?;
-                }
+                info!("mods:\n{}", enabled.iter().enumerate().map(|(i, m)| format!("{} - {}\n", i, m.name)).collect::<String>());
                 write_mod_settings(fs::File::create(modsettings_path)?, &enabled)?;
             } else {
-                writeln!(stdout, "no matches for pattern")?;
+                error!("no matches for pattern in enabled");
             }
             Ok(())
         }
         Commands::Order { pattern, order } => {
+            let enabled = read_mod_settings(fs::File::open(&modsettings_path)?)?;
             let pattern = compile_pattern(&pattern)?;
             let to_be_ordered = enabled
                 .iter()
@@ -194,7 +207,6 @@ fn execute_command(
                     m.name != "Gustav" && m.name != "GustavDev" && pattern.is_match(&m.name)
                 })
                 .collect::<Vec<_>>();
-            let mut stdout = std::io::stdout().lock();
             if !to_be_ordered.is_empty() {
                 let mut enabled = enabled
                     .iter()
@@ -203,19 +215,16 @@ fn execute_command(
                     })
                     .collect::<Vec<_>>();
                 for m in to_be_ordered.as_slice() {
-                    writeln!(stdout, "order {}", m.name)?;
+                    info!("order {}", m.name);
                 }
-                let order = order.min(1) as usize;
+                let order = (order as usize).max(1usize).min(enabled.len());
                 for m in to_be_ordered.iter().rev() {
                     enabled.insert(order, m);
                 }
-                writeln!(stdout)?;
-                for (i, m) in enabled.iter().enumerate() {
-                    writeln!(stdout, "{} - {}", i, m.name)?;
-                }
+                info!("mods:\n{}", enabled.iter().enumerate().map(|(i, m)| format!("{} - {}\n", i, m.name)).collect::<String>());
                 write_mod_settings(fs::File::create(modsettings_path)?, &enabled)?;
             } else {
-                writeln!(stdout, "no matches for pattern")?;
+                error!("no matches for pattern in enabled");
             }
             Ok(())
         }
@@ -228,13 +237,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     let conf = read_config(&args)?;
 
-    let available = read_available_mods(&conf)?;
     let modsettings_path = [&conf.profile_path, Path::new("modsettings.lsx")]
         .iter()
         .collect::<PathBuf>();
-    let enabled = read_mod_settings(fs::File::open(&modsettings_path)?)?;
 
-    if let Err(e) = execute_command(&modsettings_path, args.command, &available, &enabled) {
+    if let Err(e) = execute_command(&conf.mods_path, &modsettings_path, args.command) {
         error!("error: {}", e);
         Err(e)
     } else {

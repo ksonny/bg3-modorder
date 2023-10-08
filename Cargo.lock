@@ -410,6 +410,7 @@ dependencies = [
  "quick-xml",
  "regex",
  "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -439,6 +440,7 @@ version = "0.1.0"
 dependencies = [
  "log",
  "quick-xml",
+ "serde",
 ]
 
 [[package]]

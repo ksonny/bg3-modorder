@@ -2,6 +2,7 @@ use quick_xml::{
     events::{BytesDecl, BytesEnd, BytesStart, Event},
     Reader, Writer,
 };
+use serde::Serialize;
 use std::{
     borrow::Cow,
     cmp::Ordering,
@@ -42,7 +43,7 @@ impl Display for StackPath {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct ModInfo {
     pub uuid: String,
     pub name: String,
