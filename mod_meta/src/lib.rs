@@ -50,6 +50,7 @@ pub struct ModInfo {
     pub folder: Option<String>,
     pub md5: Option<String>,
     pub version: Option<String>,
+    pub author: Option<String>,
 }
 
 impl ModInfo {
@@ -193,6 +194,7 @@ pub fn read_mod_settings(mut reader: impl std::io::Read) -> Result<Vec<ModInfo>,
     let mut name = None;
     let mut uuid = None;
     let mut version = None;
+    let mut author = None;
 
     loop {
         match reader.read_event() {
@@ -214,6 +216,7 @@ pub fn read_mod_settings(mut reader: impl std::io::Read) -> Result<Vec<ModInfo>,
                             md5,
                             uuid,
                             version,
+                            author,
                         });
                     }
                     name = None;
@@ -221,6 +224,7 @@ pub fn read_mod_settings(mut reader: impl std::io::Read) -> Result<Vec<ModInfo>,
                     md5 = None;
                     uuid = None;
                     version = None;
+                    author = None;
                 }
             }
             Ok(Event::Empty(e)) => match (stack.last().map(|r| r.as_slice()), e.name().as_ref()) {
@@ -249,6 +253,9 @@ pub fn read_mod_settings(mut reader: impl std::io::Read) -> Result<Vec<ModInfo>,
                         }
                         "Version64" => {
                             version = value.map(|v| v.to_string());
+                        }
+                        "Author" => {
+                            author = value.map(|v| v.to_string());
                         }
                         _ => {}
                     }
@@ -279,6 +286,7 @@ pub fn read_mod_info(content: &[u8]) -> Result<Option<ModInfo>, quick_xml::Error
     let mut name = None;
     let mut uuid = None;
     let mut version = None;
+    let mut author = None;
 
     loop {
         match reader.read_event() {
@@ -317,6 +325,9 @@ pub fn read_mod_info(content: &[u8]) -> Result<Option<ModInfo>, quick_xml::Error
                         "Version64" => {
                             version = value.map(|v| v.to_string());
                         }
+                        "Author" => {
+                            author = value.map(|v| v.to_string());
+                        }
                         _ => {}
                     }
                 }
@@ -332,6 +343,7 @@ pub fn read_mod_info(content: &[u8]) -> Result<Option<ModInfo>, quick_xml::Error
             md5,
             uuid,
             version,
+            author,
         };
         Ok(Some(info))
     } else {

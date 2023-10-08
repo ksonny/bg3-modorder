@@ -133,6 +133,7 @@ fn execute_command(
                 .find(|e| e.name.ends_with(b"/meta.lsx"));
             if let Some(entry) = entry {
                 let content = read_file(&mut file, &entry)?;
+                info!("{}", std::str::from_utf8(&content.data).unwrap());
                 if let Some(mod_info) = read_mod_info(&content.data)? {
                     let json = json!({ "mods": [serde_json::to_value(mod_info)?] });
                     writeln!(
@@ -152,8 +153,11 @@ fn execute_command(
                 "mods:\n{}",
                 available
                     .iter()
-                    .enumerate()
-                    .map(|(i, m)| format!("{} - {}\n", i, m.name))
+                    .map(|m| format!(
+                        "'{}' by {}\n",
+                        m.name,
+                        m.author.as_deref().unwrap_or("unknown")
+                    ))
                     .collect::<String>()
             );
             Ok(())
@@ -165,7 +169,7 @@ fn execute_command(
                 enabled
                     .iter()
                     .enumerate()
-                    .map(|(i, m)| format!("{} - {}\n", i, m.name))
+                    .map(|(i, m)| format!("{}: '{}'\n", i, m.name))
                     .collect::<String>()
             );
             Ok(())
@@ -189,7 +193,7 @@ fn execute_command(
                     enabled
                         .iter()
                         .enumerate()
-                        .map(|(i, m)| format!("{} - {}\n", i, m.name))
+                        .map(|(i, m)| format!("{}: '{}'\n", i, m.name))
                         .collect::<String>()
                 );
                 write_mod_settings(fs::File::create(modsettings_path)?, &enabled)?;
@@ -218,7 +222,7 @@ fn execute_command(
                     enabled
                         .iter()
                         .enumerate()
-                        .map(|(i, m)| format!("{} - {}\n", i, m.name))
+                        .map(|(i, m)| format!("{}: '{}'\n", i, m.name))
                         .collect::<String>()
                 );
                 write_mod_settings(fs::File::create(modsettings_path)?, &enabled)?;
@@ -247,7 +251,7 @@ fn execute_command(
                     enabled
                         .iter()
                         .enumerate()
-                        .map(|(i, m)| format!("{} - {}\n", i, m.name))
+                        .map(|(i, m)| format!("{}: '{}'\n", i, m.name))
                         .collect::<String>()
                 );
                 write_mod_settings(fs::File::create(modsettings_path)?, &enabled)?;
@@ -280,7 +284,7 @@ fn execute_command(
                     enabled
                         .iter()
                         .enumerate()
-                        .map(|(i, m)| format!("{} - {}\n", i, m.name))
+                        .map(|(i, m)| format!("{}: '{}'\n", i, m.name))
                         .collect::<String>()
                 );
                 write_mod_settings(fs::File::create(modsettings_path)?, &enabled)?;
