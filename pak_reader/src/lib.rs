@@ -4,15 +4,9 @@ use bitflags::bitflags;
 use error::ReaderError;
 use flate2::read::ZlibDecoder;
 use log::error;
-use nom::{
-    bytes::complete::{tag, take, take_while},
-    combinator::{map, map_parser},
-    number::complete::{le_u16, le_u32, le_u64, le_u8},
-    sequence::tuple,
-    IResult,
-};
 
-const LSPKG_HEADER_SIZE: usize = 44usize;
+
+mod parser;
 
 #[derive(Debug)]
 pub struct LSPKHeader {
@@ -25,6 +19,16 @@ pub struct LSPKHeader {
     pub parts: u16,
 }
 
+impl LSPKHeader {
+    fn file_entry_size(&self) -> Option<usize> {
+        match self.version {
+            18 => Some(272usize),
+            15 | 16 => Some(2),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct FileListHeader {
     pub count: u32,
@@ -32,6 +36,18 @@ pub struct FileListHeader {
 }
 
 const FILE_ENTRY_SIZE: usize = 272usize;
+
+bitflags! {
+    #[derive(Debug)]
+    pub struct FileEntryFlagsV15: u32 {
+        const ZlibCompression = 0x01;
+        const LZ4Compression = 0x02;
+        const FastCompression = 0x10;
+        const DefaultCompression = 0x20;
+        const MaxLevelCompression = 0x40;
+        const _ = !0;
+    }
+}
 
 bitflags! {
     #[derive(Debug)]
@@ -43,6 +59,18 @@ bitflags! {
         const MaxLevelCompression = 0x40;
         const _ = !0;
     }
+}
+
+#[derive(Debug)]
+pub struct PakFileV15<'a> {
+    pub name: &'a [u8],
+    pub offset: u64,
+    pub size_compressed: u64,
+    pub size: u64,
+    pub part: u32,
+    pub flags: FileEntryFlagsV15,
+    pub crc: u32,
+    pub unknown2: u32,
 }
 
 #[derive(Debug)]
@@ -91,82 +119,18 @@ mod error {
     }
 }
 
-fn parse_signature(input: &[u8]) -> IResult<&[u8], &[u8]> {
-    tag([0x4C, 0x53, 0x50, 0x4B])(input)
-}
-
-fn parse_header(input: &[u8]) -> IResult<&[u8], LSPKHeader> {
-    map(
-        tuple((
-            parse_signature,
-            le_u32,
-            le_u64,
-            le_u32,
-            le_u8,
-            le_u8,
-            take(16usize),
-            le_u16,
-        )),
-        move |(_signature, version, offset_dir, size_dir, flags, priority, hash, parts)| {
-            LSPKHeader {
-                version,
-                offset_dir,
-                size_dir,
-                flags,
-                priority,
-                hash: hash.try_into().unwrap(),
-                parts,
-            }
-        },
-    )(input)
-}
-
-fn parse_file_list_header(input: &[u8]) -> IResult<&[u8], FileListHeader> {
-    map(tuple((le_u32, le_u32)), move |(count, size_compressed)| {
-        FileListHeader {
-            count,
-            size_compressed,
-        }
-    })(input)
-}
-
-fn parse_zero_trim_bytes(count: usize) -> impl Fn(&[u8]) -> IResult<&[u8], &[u8]> {
-    move |input| map_parser(take(count), take_while(|c| c != 0))(input)
-}
-
-fn parse_file_entry(input: &[u8]) -> IResult<&[u8], PakFile> {
-    map(
-        tuple((
-            parse_zero_trim_bytes(256usize),
-            le_u32,
-            le_u16,
-            le_u8,
-            le_u8,
-            le_u32,
-            le_u32,
-        )),
-        move |(name, offset_l, offset_u, part, flags, size_compressed, size)| PakFile {
-            name,
-            offset: (offset_l as u64) | (offset_u as u64) << 32,
-            part,
-            flags: FileEntryFlags::from_bits(flags).unwrap(),
-            size_compressed,
-            size,
-        },
-    )(input)
-}
-
 pub enum FileEntryIteratorError {
     Parse,
 }
 
 pub struct FileEntryIterator<'a> {
+    header: &'a LSPKHeader,
     buf: &'a [u8],
 }
 
 impl<'a> FileEntryIterator<'a> {
-    pub fn new(buf: &'a [u8]) -> Self {
-        FileEntryIterator { buf }
+    pub fn new(header: &LSPKHeader, buf: &'a [u8]) -> Self {
+        FileEntryIterator { header, buf }
     }
 }
 
