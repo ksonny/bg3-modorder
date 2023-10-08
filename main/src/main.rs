@@ -6,22 +6,22 @@ use std::{
 };
 
 use clap::{Parser, Subcommand};
-use config::Config;
 use env_logger::Env;
 use error::Bg3ModError;
+use globset::Glob;
 use log::{debug, error, info};
 use mod_meta::{read_mod_info, read_mod_settings, write_mod_settings, ModInfo};
 use pak_reader::{read_file, read_file_list, read_header};
-use regex::{Regex, RegexBuilder};
-use serde::Deserialize;
 use serde_json::json;
+use steamlocate::SteamDir;
+use lazy_static::lazy_static;
 
 mod error;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug)]
 struct Configuration {
     mods_path: PathBuf,
-    profile_path: PathBuf,
+    modsettings_path: PathBuf,
 }
 
 #[derive(Subcommand, Debug)]
@@ -51,17 +51,53 @@ enum Commands {
 #[derive(Debug, Parser)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    #[arg(short, long, default_value = "config.toml")]
-    config_path: PathBuf,
+    #[arg(short, long)]
+    bg3_path: Option<PathBuf>,
     #[command(subcommand)]
     command: Commands,
 }
 
-fn read_config(args: &Args) -> Result<Configuration, config::ConfigError> {
-    Config::builder()
-        .add_source(config::File::from(args.config_path.as_path()))
-        .build()?
-        .try_deserialize()
+lazy_static! {
+    static ref COMPATDATA_APPDATA_PATH: PathBuf = PathBuf::from("compatdata/1086940/pfx/drive_c/users/steamuser/AppData/Local/Larian Studios/Baldur's Gate 3/");
+    static ref MODS_PATH: PathBuf = PathBuf::from("Mods");
+    static ref MODSETTINGS_PATH: PathBuf = PathBuf::from("PlayerProfiles/Public/modsettings.lsx");
+}
+
+fn create_config(args: &Args) -> Result<Configuration, Bg3ModError> {
+    if let Some(bg3_path) = &args.bg3_path {
+        let mods_path = [bg3_path, &MODS_PATH].iter().collect::<PathBuf>();
+        let modsettings_path = [bg3_path, &MODSETTINGS_PATH]
+            .iter()
+            .collect::<PathBuf>();
+        Ok(Configuration {
+            mods_path,
+            modsettings_path,
+        })
+    } else if cfg!(unix) {
+        let mut steamdir = SteamDir::locate().unwrap();
+        let bg3_path = steamdir.libraryfolders().paths.iter().find_map(|path| {
+            let bg3_path = [path, &COMPATDATA_APPDATA_PATH].iter().collect::<PathBuf>();
+            if bg3_path.is_dir() {
+                Some(bg3_path)
+            } else {
+                None
+            }
+        });
+        if let Some(bg3_path) = bg3_path.as_deref() {
+            let mods_path = [bg3_path, &MODS_PATH].iter().collect::<PathBuf>();
+            let modsettings_path = [bg3_path, &MODSETTINGS_PATH]
+                .iter()
+                .collect::<PathBuf>();
+            Ok(Configuration {
+                mods_path,
+                modsettings_path,
+            })
+        } else {
+            Err(Bg3ModError::AppDataNotFound)
+        }
+    } else {
+        Err(Bg3ModError::AppDataDetectionNotSupported)
+    }
 }
 
 fn read_available_mods(mods_path: &Path) -> Result<Vec<ModInfo>, Box<dyn std::error::Error>> {
@@ -112,14 +148,8 @@ fn read_available_mods(mods_path: &Path) -> Result<Vec<ModInfo>, Box<dyn std::er
     Ok(mod_infos)
 }
 
-fn compile_pattern(pattern: &str) -> Result<Regex, regex::Error> {
-    let pattern = regex::escape(pattern).replace("\\*", ".+");
-    RegexBuilder::new(&pattern).case_insensitive(true).build()
-}
-
 fn execute_command(
-    mods_path: &Path,
-    modsettings_path: &Path,
+    conf: &Configuration,
     cmd: Commands,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match cmd {
@@ -148,7 +178,7 @@ fn execute_command(
             Ok(())
         }
         Commands::Available => {
-            let available = read_available_mods(mods_path)?;
+            let available = read_available_mods(&conf.mods_path)?;
             info!(
                 "mods:\n{}",
                 available
@@ -163,7 +193,7 @@ fn execute_command(
             Ok(())
         }
         Commands::Enabled => {
-            let enabled = read_mod_settings(fs::File::open(modsettings_path)?)?;
+            let enabled = read_mod_settings(fs::File::open(&conf.modsettings_path)?)?;
             info!(
                 "mods:\n{}",
                 enabled
@@ -175,9 +205,9 @@ fn execute_command(
             Ok(())
         }
         Commands::Enable { pattern } => {
-            let available = read_available_mods(mods_path)?;
-            let enabled = read_mod_settings(fs::File::open(modsettings_path)?)?;
-            let pattern = compile_pattern(&pattern)?;
+            let available = read_available_mods(&conf.mods_path)?;
+            let enabled = read_mod_settings(fs::File::open(&conf.modsettings_path)?)?;
+            let pattern = Glob::new(&pattern)?.compile_matcher();
             let to_be_enabled = available
                 .iter()
                 .filter(|m| pattern.is_match(&m.name))
@@ -196,15 +226,15 @@ fn execute_command(
                         .map(|(i, m)| format!("{}: '{}'\n", i, m.name))
                         .collect::<String>()
                 );
-                write_mod_settings(fs::File::create(modsettings_path)?, &enabled)?;
+                write_mod_settings(fs::File::create(&conf.modsettings_path)?, &enabled)?;
             } else {
                 error!("no matches for pattern or all enabled");
             }
             Ok(())
         }
         Commands::Disable { pattern } => {
-            let enabled = read_mod_settings(fs::File::open(modsettings_path)?)?;
-            let pattern = compile_pattern(&pattern)?;
+            let enabled = read_mod_settings(fs::File::open(&conf.modsettings_path)?)?;
+            let pattern = Glob::new(&pattern)?.compile_matcher();
             let to_be_disabled = enabled
                 .iter()
                 .filter(|m| !m.is_internal() && pattern.is_match(&m.name))
@@ -225,15 +255,15 @@ fn execute_command(
                         .map(|(i, m)| format!("{}: '{}'\n", i, m.name))
                         .collect::<String>()
                 );
-                write_mod_settings(fs::File::create(modsettings_path)?, &enabled)?;
+                write_mod_settings(fs::File::create(&conf.modsettings_path)?, &enabled)?;
             } else {
                 error!("no matches for pattern in enabled");
             }
             Ok(())
         }
         Commands::Clean => {
-            let available = read_available_mods(mods_path)?;
-            let enabled = read_mod_settings(fs::File::open(modsettings_path)?)?;
+            let available = read_available_mods(&conf.mods_path)?;
+            let enabled = read_mod_settings(fs::File::open(&conf.modsettings_path)?)?;
             let to_be_removed = enabled
                 .iter()
                 .filter(|m| !m.is_internal() && !available.iter().any(|e| e.uuid == m.uuid))
@@ -254,15 +284,15 @@ fn execute_command(
                         .map(|(i, m)| format!("{}: '{}'\n", i, m.name))
                         .collect::<String>()
                 );
-                write_mod_settings(fs::File::create(modsettings_path)?, &enabled)?;
+                write_mod_settings(fs::File::create(&conf.modsettings_path)?, &enabled)?;
             } else {
                 error!("nothing to clean");
             }
             Ok(())
         }
         Commands::Order { pattern, order } => {
-            let enabled = read_mod_settings(fs::File::open(modsettings_path)?)?;
-            let pattern = compile_pattern(&pattern)?;
+            let enabled = read_mod_settings(fs::File::open(&conf.modsettings_path)?)?;
+            let pattern = Glob::new(&pattern)?.compile_matcher();
             let to_be_ordered = enabled
                 .iter()
                 .filter(|m| !m.is_internal() && pattern.is_match(&m.name))
@@ -287,7 +317,7 @@ fn execute_command(
                         .map(|(i, m)| format!("{}: '{}'\n", i, m.name))
                         .collect::<String>()
                 );
-                write_mod_settings(fs::File::create(modsettings_path)?, &enabled)?;
+                write_mod_settings(fs::File::create(&conf.modsettings_path)?, &enabled)?;
             } else {
                 error!("no matches for pattern in enabled");
             }
@@ -300,13 +330,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init_from_env(Env::default().default_filter_or("info"));
 
     let args = Args::parse();
-    let conf = read_config(&args)?;
+    let conf = create_config(&args)?;
 
-    let modsettings_path = [&conf.profile_path, Path::new("modsettings.lsx")]
-        .iter()
-        .collect::<PathBuf>();
-
-    if let Err(e) = execute_command(&conf.mods_path, &modsettings_path, args.command) {
+    if let Err(e) = execute_command(&conf, args.command) {
         error!("error: {}", e);
         Err(e)
     } else {
