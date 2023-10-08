@@ -9,12 +9,12 @@ use clap::{Parser, Subcommand};
 use env_logger::Env;
 use error::Bg3ModError;
 use globset::Glob;
+use lazy_static::lazy_static;
 use log::{debug, error, info};
 use mod_meta::{read_mod_info, read_mod_settings, write_mod_settings, ModInfo};
 use pak_reader::{read_file, read_file_list, read_header};
 use serde_json::json;
 use steamlocate::SteamDir;
-use lazy_static::lazy_static;
 
 mod error;
 
@@ -58,46 +58,51 @@ struct Args {
 }
 
 lazy_static! {
-    static ref COMPATDATA_APPDATA_PATH: PathBuf = PathBuf::from("compatdata/1086940/pfx/drive_c/users/steamuser/AppData/Local/Larian Studios/Baldur's Gate 3/");
+    static ref COMPATDATA_APPDATA_PATH: PathBuf =
+        PathBuf::from("compatdata/1086940/pfx/drive_c/users/steamuser/AppData");
+    static ref BG3_DATA_PATH: PathBuf = PathBuf::from("Local/Larian Studios/Baldur's Gate 3");
     static ref MODS_PATH: PathBuf = PathBuf::from("Mods");
     static ref MODSETTINGS_PATH: PathBuf = PathBuf::from("PlayerProfiles/Public/modsettings.lsx");
 }
 
 fn create_config(args: &Args) -> Result<Configuration, Bg3ModError> {
-    if let Some(bg3_path) = &args.bg3_path {
-        let mods_path = [bg3_path, &MODS_PATH].iter().collect::<PathBuf>();
-        let modsettings_path = [bg3_path, &MODSETTINGS_PATH]
-            .iter()
-            .collect::<PathBuf>();
-        Ok(Configuration {
-            mods_path,
-            modsettings_path,
-        })
+    let bg3_path = if let Some(bg3_path) = &args.bg3_path {
+        Ok(bg3_path.to_owned())
     } else if cfg!(unix) {
         let mut steamdir = SteamDir::locate().unwrap();
-        let bg3_path = steamdir.libraryfolders().paths.iter().find_map(|path| {
-            let bg3_path = [path, &COMPATDATA_APPDATA_PATH].iter().collect::<PathBuf>();
-            if bg3_path.is_dir() {
-                Some(bg3_path)
-            } else {
-                None
-            }
-        });
-        if let Some(bg3_path) = bg3_path.as_deref() {
-            let mods_path = [bg3_path, &MODS_PATH].iter().collect::<PathBuf>();
-            let modsettings_path = [bg3_path, &MODSETTINGS_PATH]
-                .iter()
-                .collect::<PathBuf>();
-            Ok(Configuration {
-                mods_path,
-                modsettings_path,
+        steamdir
+            .libraryfolders()
+            .paths
+            .iter()
+            .find_map(|path| {
+                let bg3_path = [path, &COMPATDATA_APPDATA_PATH, &BG3_DATA_PATH]
+                    .iter()
+                    .collect::<PathBuf>();
+                if bg3_path.is_dir() {
+                    Some(bg3_path)
+                } else {
+                    None
+                }
             })
-        } else {
-            Err(Bg3ModError::AppDataNotFound)
-        }
+            .ok_or(Bg3ModError::AppDataNotFound)
+    } else if cfg!(windows) {
+        std::env::var("APP_DATA")
+            .map(|path| {
+                [Path::new(&path), &BG3_DATA_PATH]
+                    .iter()
+                    .collect::<PathBuf>()
+            })
+            .map_err(|_| Bg3ModError::AppDataNotFound)
     } else {
         Err(Bg3ModError::AppDataDetectionNotSupported)
-    }
+    }?;
+
+    let mods_path = [&bg3_path, &MODS_PATH].iter().collect::<PathBuf>();
+    let modsettings_path = [&bg3_path, &MODSETTINGS_PATH].iter().collect::<PathBuf>();
+    Ok(Configuration {
+        mods_path,
+        modsettings_path,
+    })
 }
 
 fn read_available_mods(mods_path: &Path) -> Result<Vec<ModInfo>, Box<dyn std::error::Error>> {
@@ -148,10 +153,7 @@ fn read_available_mods(mods_path: &Path) -> Result<Vec<ModInfo>, Box<dyn std::er
     Ok(mod_infos)
 }
 
-fn execute_command(
-    conf: &Configuration,
-    cmd: Commands,
-) -> Result<(), Box<dyn std::error::Error>> {
+fn execute_command(conf: &Configuration, cmd: Commands) -> Result<(), Box<dyn std::error::Error>> {
     match cmd {
         Commands::InfoJson { path } => {
             let mut file = fs::File::open(path)?;
