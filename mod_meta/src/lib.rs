@@ -1,13 +1,13 @@
-use std::{
-    borrow::Cow,
-    collections::BTreeMap,
-    fmt::Display,
-    ops::{Deref, DerefMut}, cmp::Ordering,
-};
-
 use quick_xml::{
     events::{BytesDecl, BytesEnd, BytesStart, Event},
     Reader, Writer,
+};
+use std::{
+    borrow::Cow,
+    cmp::Ordering,
+    collections::BTreeMap,
+    fmt::Display,
+    ops::{Deref, DerefMut},
 };
 
 struct StackPath(Vec<Vec<u8>>);
@@ -45,9 +45,9 @@ impl Display for StackPath {
 #[derive(Debug)]
 pub struct ModInfo {
     pub uuid: String,
+    pub name: String,
     pub folder: Option<String>,
     pub md5: Option<String>,
-    pub name: Option<String>,
     pub version: Option<String>,
 }
 
@@ -78,7 +78,7 @@ fn read_mod_attr_value<'a>(
 
 pub fn write_mod_settings(
     writer: impl std::io::Write,
-    mod_infos: &[ModInfo],
+    mod_infos: &[&ModInfo],
 ) -> Result<(), quick_xml::Error> {
     let mut writer = Writer::new_with_indent(writer, b' ', 4);
 
@@ -137,7 +137,7 @@ pub fn write_mod_settings(
                 w.create_element("attribute")
                     .with_attribute(("id", "Name"))
                     .with_attribute(("type", "LSString"))
-                    .with_attribute(("value", mod_info.name.as_deref().unwrap_or("")))
+                    .with_attribute(("value", mod_info.name.as_str()))
                     .write_empty()?;
                 w.create_element("attribute")
                     .with_attribute(("id", "Folder"))
@@ -172,8 +172,10 @@ pub fn write_mod_settings(
     Ok(())
 }
 
-pub fn read_mod_settings(content: &[u8]) -> Result<Vec<ModInfo>, quick_xml::Error> {
-    let mut reader = Reader::from_reader(content);
+pub fn read_mod_settings(mut reader: impl std::io::Read) -> Result<Vec<ModInfo>, quick_xml::Error> {
+    let mut buf = Vec::new();
+    reader.read_to_end(&mut buf)?;
+    let mut reader = Reader::from_reader(buf.as_slice());
     let mut stack = StackPath(Vec::new());
 
     let mut order = BTreeMap::new();
@@ -189,28 +191,30 @@ pub fn read_mod_settings(content: &[u8]) -> Result<Vec<ModInfo>, quick_xml::Erro
         match reader.read_event() {
             Ok(Event::Eof) => break,
             Ok(Event::Start(e)) if e.name().as_ref() == b"node" => {
-                stack.push(e.try_get_attribute(b"id")?.expect("Failed to get id of node").value.into_owned());
+                let id = e
+                    .try_get_attribute(b"id")?
+                    .expect("Failed to get id of node")
+                    .value
+                    .into_owned();
+                stack.push(id);
             }
             Ok(Event::End(e)) if e.name().as_ref() == b"node" => {
-                stack.pop();
-            }
-            Ok(Event::End(e)) if e.name().as_ref() == b"ModuleShortDesc" => {
-                if let Some(uuid) = uuid {
-                mods.push(
-                    ModInfo {
-                        name,
-                        folder,
-                        md5,
-                        uuid,
-                        version,
-                    },
-                );
+                if let Some(b"ModuleShortDesc") = stack.pop().as_deref() {
+                    if let (Some(uuid), Some(name)) = (uuid, name) {
+                        mods.push(ModInfo {
+                            name,
+                            folder,
+                            md5,
+                            uuid,
+                            version,
+                        });
+                    }
+                    name = None;
+                    folder = None;
+                    md5 = None;
+                    uuid = None;
+                    version = None;
                 }
-                name = None;
-                folder = None;
-                md5 = None;
-                uuid = None;
-                version = None;
             }
             Ok(Event::Empty(e)) => match (stack.last().map(|r| r.as_slice()), e.name().as_ref()) {
                 (Some(b"Module"), b"attribute") => {
@@ -314,15 +318,15 @@ pub fn read_mod_info(content: &[u8]) -> Result<Option<ModInfo>, quick_xml::Error
             Err(e) => panic!("error: {}", e),
         }
     }
-    if let Some(uuid) = uuid {
-    let info = ModInfo {
-        name,
-        folder,
-        md5,
-        uuid,
-        version,
-    };
-    Ok(Some(info))
+    if let (Some(uuid), Some(name)) = (uuid, name) {
+        let info = ModInfo {
+            name,
+            folder,
+            md5,
+            uuid,
+            version,
+        };
+        Ok(Some(info))
     } else {
         Ok(None)
     }
