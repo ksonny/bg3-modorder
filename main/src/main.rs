@@ -12,7 +12,7 @@ use globset::Glob;
 use lazy_static::lazy_static;
 use log::{debug, error, info};
 use mod_meta::{read_mod_info, read_mod_settings, write_mod_settings, ModInfo};
-use pak_reader::{read_file, read_file_list, read_header};
+use pak_reader::Package;
 use serde_json::json;
 use steamlocate::SteamDir;
 
@@ -130,19 +130,16 @@ fn read_available_mods(mods_path: &Path) -> Result<Vec<ModInfo>, Box<dyn std::er
             "Open {}",
             path.path().file_name().unwrap().to_str().unwrap()
         );
-        let mut file = fs::File::open(path.path())?;
-        let header = read_header(&mut file)?;
-        debug!("Read file list");
-        let file_list = read_file_list(&mut file, &header)?;
+        let mut package = Package::new(fs::File::open(path.path())?);
 
-        for entry in file_list.iter().flatten() {
+        for entry in package.files()?.iter().flatten() {
             if entry.name.ends_with(b"/meta.lsx") {
                 debug!(
                     "Read meta from: {}",
                     std::str::from_utf8(entry.name).unwrap_or("non-utf8")
                 );
-                let content = read_file(&mut file, &entry)?;
-                if let Some(mod_info) = read_mod_info(&content.data)? {
+                let data = package.content(&entry)?;
+                if let Some(mod_info) = read_mod_info(&data)? {
                     mod_infos.push(mod_info);
                 }
             }
@@ -156,17 +153,16 @@ fn read_available_mods(mods_path: &Path) -> Result<Vec<ModInfo>, Box<dyn std::er
 fn execute_command(conf: &Configuration, cmd: Commands) -> Result<(), Box<dyn std::error::Error>> {
     match cmd {
         Commands::InfoJson { path } => {
-            let mut file = fs::File::open(path)?;
-            let header = read_header(&mut file)?;
-            let file_list = read_file_list(&mut file, &header)?;
+            let mut package = Package::new(fs::File::open(path)?);
+            let file_list = package.files()?;
             let entry = file_list
                 .iter()
                 .flatten()
                 .find(|e| e.name.ends_with(b"/meta.lsx"));
             if let Some(entry) = entry {
-                let content = read_file(&mut file, &entry)?;
-                info!("{}", std::str::from_utf8(&content.data).unwrap());
-                if let Some(mod_info) = read_mod_info(&content.data)? {
+                let data = package.content(&entry)?;
+                debug!("{}", std::str::from_utf8(&data).unwrap());
+                if let Some(mod_info) = read_mod_info(&data)? {
                     let json = json!({ "mods": [serde_json::to_value(mod_info)?] });
                     writeln!(
                         std::io::stdout(),
