@@ -1,0 +1,10 @@
+[workspace]
+
+members = [
+	"main",
+	"mod_meta"
+]
+
+[profile.dev]
+opt-level = 1               # Use slightly better optimizations.
+overflow-checks = false     # Disable integer overflow checks.
