@@ -52,6 +52,12 @@ pub struct ModInfo {
     pub version: Option<String>,
 }
 
+impl ModInfo {
+    pub fn is_internal(&self) -> bool {
+        self.name == "Gustav" || self.name == "GustavDev"
+    }
+}
+
 pub fn read_mod_attribute(
     map: &mut BTreeMap<String, String>,
     e: &BytesStart,
