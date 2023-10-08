@@ -5,8 +5,8 @@ use error::ReaderError;
 use flate2::read::ZlibDecoder;
 use log::error;
 use nom::{
-    bytes::complete::{tag, take},
-    combinator::map,
+    bytes::complete::{tag, take, take_while},
+    combinator::{map, map_parser},
     number::complete::{le_u16, le_u32, le_u64, le_u8},
     sequence::tuple,
     IResult,
@@ -63,31 +63,31 @@ mod error {
         Decompress(String),
         DecompressMissmatch,
     }
-}
 
-impl std::fmt::Display for ReaderError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self)
+    impl std::fmt::Display for ReaderError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "{:?}", self)
+        }
     }
-}
 
-impl std::error::Error for ReaderError {}
+    impl std::error::Error for ReaderError {}
 
-impl From<std::io::Error> for ReaderError {
-    fn from(e: std::io::Error) -> Self {
-        ReaderError::IO(e)
+    impl From<std::io::Error> for ReaderError {
+        fn from(e: std::io::Error) -> Self {
+            ReaderError::IO(e)
+        }
     }
-}
 
-impl From<lz4_flex::block::DecompressError> for ReaderError {
-    fn from(e: lz4_flex::block::DecompressError) -> Self {
-        ReaderError::Decompress(format!("{}", e))
+    impl From<lz4_flex::block::DecompressError> for ReaderError {
+        fn from(e: lz4_flex::block::DecompressError) -> Self {
+            ReaderError::Decompress(format!("{}", e))
+        }
     }
-}
 
-impl From<nom::Err<nom::error::Error<&[u8]>>> for ReaderError {
-    fn from(e: nom::Err<nom::error::Error<&[u8]>>) -> Self {
-        ReaderError::Parse(format!("{:?}", e))
+    impl From<nom::Err<nom::error::Error<&[u8]>>> for ReaderError {
+        fn from(e: nom::Err<nom::error::Error<&[u8]>>) -> Self {
+            ReaderError::Parse(format!("{:?}", e))
+        }
     }
 }
 
@@ -130,9 +130,21 @@ fn parse_file_list_header(input: &[u8]) -> IResult<&[u8], FileListHeader> {
     })(input)
 }
 
+fn parse_zero_trim_bytes(count: usize) -> impl Fn(&[u8]) -> IResult<&[u8], &[u8]> {
+    move |input| map_parser(take(count), take_while(|c| c != 0))(input)
+}
+
 fn parse_file_entry(input: &[u8]) -> IResult<&[u8], PakFile> {
     map(
-        tuple((take(256usize), le_u32, le_u16, le_u8, le_u8, le_u32, le_u32)),
+        tuple((
+            parse_zero_trim_bytes(256usize),
+            le_u32,
+            le_u16,
+            le_u8,
+            le_u8,
+            le_u32,
+            le_u32,
+        )),
         move |(name, offset_l, offset_u, part, flags, size_compressed, size)| PakFile {
             name,
             offset: (offset_l as u64) | (offset_u as u64) << 32,
@@ -185,7 +197,7 @@ pub struct FileList {
 }
 
 impl FileList {
-    pub fn iter<'a>(&'a self) -> FileEntryIterator<'a> {
+    pub fn iter(&self) -> FileEntryIterator {
         FileEntryIterator::new(&self.data)
     }
 }
@@ -206,7 +218,7 @@ pub fn read_file_list<F: Read + Seek>(
 ) -> Result<FileList, ReaderError> {
     let mut buf = vec![0u8; header.size_dir as usize];
     stream.seek(SeekFrom::Start(header.offset_dir))?;
-    stream.read(&mut buf)?;
+    stream.read_exact(&mut buf)?;
     let (rest, list_header) = parse_file_list_header(&buf)?;
     let data = lz4_flex::decompress(rest, FILE_ENTRY_SIZE * list_header.count as usize)?;
 
@@ -216,7 +228,7 @@ pub fn read_file_list<F: Read + Seek>(
 pub fn read_header<F: Read + Seek>(stream: &mut F) -> Result<LSPKHeader, ReaderError> {
     let mut header_buf = [0u8; LSPKG_HEADER_SIZE];
     stream.seek(SeekFrom::Start(0))?;
-    stream.read(&mut header_buf)?;
+    stream.read_exact(&mut header_buf)?;
     let (_, header) = parse_header(&header_buf)?;
     Ok(header)
 }
@@ -227,7 +239,7 @@ pub fn read_file<F: Read + Seek>(
 ) -> Result<PakFileContent, ReaderError> {
     let mut buf = vec![0u8; file.size_compressed as usize];
     stream.seek(SeekFrom::Start(file.offset))?;
-    stream.read(&mut buf)?;
+    stream.read_exact(&mut buf)?;
 
     if file.flags.contains(FileEntryFlags::LZ4Compression) {
         let data = lz4_flex::decompress(&buf, file.size as usize)?;
