@@ -2,7 +2,8 @@
 
 members = [
 	"main",
-	"mod_meta"
+	"mod_meta",
+	"pak_reader",
 ]
 
 [profile.dev]
