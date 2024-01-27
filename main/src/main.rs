@@ -2,7 +2,7 @@ use std::{
     ffi::OsStr,
     fs,
     io::Write,
-    path::{Path, PathBuf},
+    path::{Path, PathBuf}, collections::BTreeMap,
 };
 
 use clap::{Parser, Subcommand};
@@ -177,12 +177,20 @@ fn execute_command(conf: &Configuration, cmd: Commands) -> Result<(), Box<dyn st
         }
         Commands::Available => {
             let available = read_available_mods(&conf.mods_path)?;
+            let enabled = read_mod_settings(fs::File::open(&conf.modsettings_path)?)?;
+            let index_map = enabled
+                .iter()
+                .enumerate()
+                .map(|(index, m)| (&m.uuid, index))
+                .collect::<BTreeMap<_, _>>();
+
             info!(
                 "mods:\n{}",
                 available
                     .iter()
-                    .map(|m| format!(
-                        "'{}' by {}\n",
+                    .map(move |m| format!(
+                        "{:>3} '{}' by {}\n",
+                        index_map.get(&m.uuid).map_or("-".to_string(), |index| format!("{}", index)),
                         m.name,
                         m.author.as_deref().unwrap_or("unknown")
                     ))
@@ -197,7 +205,7 @@ fn execute_command(conf: &Configuration, cmd: Commands) -> Result<(), Box<dyn st
                 enabled
                     .iter()
                     .enumerate()
-                    .map(|(i, m)| format!("{}: '{}'\n", i, m.name))
+                    .map(|(i, m)| format!("{:>3}: '{}'\n", i, m.name))
                     .collect::<String>()
             );
             Ok(())
